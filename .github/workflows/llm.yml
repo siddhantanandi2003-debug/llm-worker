@@ -116,20 +116,20 @@ jobs:
       - name: Check output is non-empty
         run: |
           [ -s "$GITHUB_WORKSPACE/output.txt" ] || { echo "ERROR: model produced no output - see run.log"; cat "$GITHUB_WORKSPACE/run.log"; exit 1; }
-          grep -q "error" "$GITHUB_WORKSPACE/run.log" && { echo "WARNING: errors found in run.log"; } || true
 
       - name: Save result summary
         run: |
+          SUMMARY="$GITHUB_STEP_SUMMARY"
           {
             echo "## LLM Worker Result"
             echo "**Model:** $MODEL_KEY"
             echo "**Tokens (max):** $MAX_TOKENS | **Temp:** $TEMPERATURE"
             echo "**Cached model used:** ${{ steps.cache-model.outputs.cache-hit == 'true' }}"
             echo ""
-            echo '```'
+            echo '~~~'
             cat "$GITHUB_WORKSPACE/output.txt"
-            echo '```"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~'
+          } >> "$SUMMARY"
 
       - name: Upload result artifact
         uses: actions/upload-artifact@v4
