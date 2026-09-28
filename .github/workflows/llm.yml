@@ -33,23 +33,27 @@ jobs:
       TEMPERATURE: ${{ inputs.temperature }}
       PROMPT: ${{ inputs.prompt }}
     steps:
-      - name: Resolve model URL and filename
+      - name: Resolve model URLs and filename
         id: model
         run: |
           case "$MODEL_KEY" in
             qwen05b)
-              URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" ;;
+              URLS="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" ;;
             qwen15b)
-              URL="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" ;;
+              URLS="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" ;;
             qwen7b)
-              URL="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf" ;;
+              URLS="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf" ;;
             qwen3-8b)
-              URL="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf" ;;
+              URLS="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf" ;;
             *)
               echo "Unknown model key: $MODEL_KEY"; exit 1 ;;
           esac
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "file=$(basename "$URL")" >> "$GITHUB_OUTPUT"
+          {
+            echo "urls<<URLS_EOF"
+            echo "$URLS"
+            echo "URLS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "file=$(basename "${URLS%% *}")" >> "$GITHUB_OUTPUT"
 
       - name: Restore model from cache
         id: cache-model
@@ -58,18 +62,35 @@ jobs:
           path: models/
           key: llm-model-${{ inputs.model }}
 
-      - name: Download model (only if not cached)
+      - name: Download model parts (only missing ones)
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
           mkdir -p models
-          echo "Model not cached - downloading (one time only)"
-          curl -sL --retry 3 -o "models/${{ steps.model.outputs.file }}" "${{ steps.model.outputs.url }}"
+          for u in ${{ steps.model.outputs.urls }}; do
+            f="models/$(basename "$u")"
+            if [ -s "$f" ]; then
+              echo "already present: $f"
+            else
+              echo "downloading: $f"
+              curl -sL --retry 3 -o "$f" "$u"
+            fi
+          done
           ls -lh models/
 
-      - name: Verify model file
+      - name: Validate model files (GGUF magic)
         run: |
-          ls -lh models/
-          test -s "models/${{ steps.model.outputs.file }}" || { echo "Model file missing"; exit 1; }
+          found=0
+          for f in models/*.gguf; do
+            [ -e "$f" ] || continue
+            found=1
+            magic=$(head -c4 "$f")
+            if [ "$magic" != "GGUF" ]; then
+              echo "ERROR: $f is not a valid GGUF file (magic='$magic') - probably a 404/HTML page"
+              exit 1
+            fi
+            echo "OK: $f ($(stat -c%s "$f") bytes)"
+          done
+          [ "$found" = "1" ] || { echo "No model files found"; exit 1; }
 
       - name: Setup llama.cpp
         run: |
@@ -92,6 +113,11 @@ jobs:
           echo "=== RAW OUTPUT ==="
           cat "$GITHUB_WORKSPACE/output.txt"
 
+      - name: Check output is non-empty
+        run: |
+          [ -s "$GITHUB_WORKSPACE/output.txt" ] || { echo "ERROR: model produced no output - see run.log"; cat "$GITHUB_WORKSPACE/run.log"; exit 1; }
+          grep -q "error" "$GITHUB_WORKSPACE/run.log" && { echo "WARNING: errors found in run.log"; } || true
+
       - name: Save result summary
         run: |
           {
@@ -102,7 +128,7 @@ jobs:
             echo ""
             echo '```'
             cat "$GITHUB_WORKSPACE/output.txt"
-            echo '```'
+            echo '```"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload result artifact
