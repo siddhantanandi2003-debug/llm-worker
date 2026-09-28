@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/
-          key: llm-model-${{ inputs.model }}
+          key: llm-model-v2-${{ inputs.model }}
 
       - name: Download model parts (only missing ones)
         if: steps.cache-model.outputs.cache-hit != 'true'
