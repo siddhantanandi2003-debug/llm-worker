@@ -10,13 +10,17 @@ on:
       model:
         description: 'Model key (qwen05b | qwen15b | qwen7b | qwen3-8b)'
         required: false
-        default: 'qwen15b'
+        default: 'qwen3-8b'
+      system:
+        description: 'System prompt (persona/instructions for the model)'
+        required: false
+        default: 'You are a helpful assistant.'
       max_tokens:
         description: 'Max tokens to generate'
         required: false
         default: '300'
       temperature:
-        description: 'Temperature (0 = deterministic)'
+        description: 'Temperature (0.2-0.7 recommended, avoid 0)'
         required: false
         default: '0.3'
 
@@ -32,6 +36,7 @@ jobs:
       MAX_TOKENS: ${{ inputs.max_tokens }}
       TEMPERATURE: ${{ inputs.temperature }}
       PROMPT: ${{ inputs.prompt }}
+      SYSTEM: ${{ inputs.system }}
     steps:
       - name: Resolve model URLs and filename
         id: model
@@ -108,6 +113,7 @@ jobs:
           cd llama/build/bin
           printf '%s\n' "$PROMPT" | LD_LIBRARY_PATH=. ./llama-cli \
             -m "$GITHUB_WORKSPACE/models/${{ steps.model.outputs.file }}" \
+            -sys "$SYSTEM" \
             -n "$MAX_TOKENS" --temp "$TEMPERATURE" \
             > "$GITHUB_WORKSPACE/output.txt" 2> "$GITHUB_WORKSPACE/run.log" || true
           echo "=== RAW OUTPUT ==="
@@ -122,7 +128,7 @@ jobs:
           SUMMARY="$GITHUB_STEP_SUMMARY"
           {
             echo "## LLM Worker Result"
-            echo "**Model:** $MODEL_KEY"
+            echo "**Model:** $MODEL_KEY | **System:** ${SYSTEM:0:120}"
             echo "**Tokens (max):** $MAX_TOKENS | **Temp:** $TEMPERATURE"
             echo "**Cached model used:** ${{ steps.cache-model.outputs.cache-hit == 'true' }}"
             echo ""
