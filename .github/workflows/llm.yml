@@ -1,0 +1,115 @@
+name: LLM Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt for the model'
+        required: true
+        default: 'Hello, introduce yourself in one line.'
+      model:
+        description: 'Model key (qwen05b | qwen15b | qwen7b | qwen3-8b)'
+        required: false
+        default: 'qwen15b'
+      max_tokens:
+        description: 'Max tokens to generate'
+        required: false
+        default: '300'
+      temperature:
+        description: 'Temperature (0 = deterministic)'
+        required: false
+        default: '0.3'
+
+permissions:
+  contents: read
+
+jobs:
+  infer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MODEL_KEY: ${{ inputs.model }}
+      MAX_TOKENS: ${{ inputs.max_tokens }}
+      TEMPERATURE: ${{ inputs.temperature }}
+      PROMPT: ${{ inputs.prompt }}
+    steps:
+      - name: Resolve model URL and filename
+        id: model
+        run: |
+          case "$MODEL_KEY" in
+            qwen05b)
+              URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" ;;
+            qwen15b)
+              URL="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" ;;
+            qwen7b)
+              URL="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf" ;;
+            qwen3-8b)
+              URL="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf" ;;
+            *)
+              echo "Unknown model key: $MODEL_KEY"; exit 1 ;;
+          esac
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "file=$(basename "$URL")" >> "$GITHUB_OUTPUT"
+
+      - name: Restore model from cache
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: models/
+          key: llm-model-${{ inputs.model }}
+
+      - name: Download model (only if not cached)
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          echo "Model not cached - downloading (one time only)"
+          curl -sL --retry 3 -o "models/${{ steps.model.outputs.file }}" "${{ steps.model.outputs.url }}"
+          ls -lh models/
+
+      - name: Verify model file
+        run: |
+          ls -lh models/
+          test -s "models/${{ steps.model.outputs.file }}" || { echo "Model file missing"; exit 1; }
+
+      - name: Setup llama.cpp
+        run: |
+          sudo apt-get install -y -qq libgomp1 >/dev/null 2>&1 || true
+          mkdir -p llama
+          cd llama
+          curl -sL -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/b6000/llama-b6000-bin-ubuntu-x64.zip"
+          python3 -c "import zipfile; zipfile.ZipFile('llama.zip').extractall('.')"
+          cd build/bin
+          chmod +x llama-cli
+          LD_LIBRARY_PATH=. ./llama-cli --version
+
+      - name: Run inference
+        run: |
+          cd llama/build/bin
+          printf '%s\n' "$PROMPT" | LD_LIBRARY_PATH=. ./llama-cli \
+            -m "$GITHUB_WORKSPACE/models/${{ steps.model.outputs.file }}" \
+            -n "$MAX_TOKENS" --temp "$TEMPERATURE" \
+            > "$GITHUB_WORKSPACE/output.txt" 2> "$GITHUB_WORKSPACE/run.log" || true
+          echo "=== RAW OUTPUT ==="
+          cat "$GITHUB_WORKSPACE/output.txt"
+
+      - name: Save result summary
+        run: |
+          {
+            echo "## LLM Worker Result"
+            echo "**Model:** $MODEL_KEY"
+            echo "**Tokens (max):** $MAX_TOKENS | **Temp:** $TEMPERATURE"
+            echo "**Cached model used:** ${{ steps.cache-model.outputs.cache-hit == 'true' }}"
+            echo ""
+            echo '```'
+            cat "$GITHUB_WORKSPACE/output.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result
+          path: |
+            output.txt
+            run.log
+          retention-days: 30
