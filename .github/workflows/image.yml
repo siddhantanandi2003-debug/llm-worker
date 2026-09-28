@@ -1,0 +1,68 @@
+name: Image Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Image prompt'
+        required: true
+        default: 'A serene Indian village at sunset, watercolor style'
+      width:
+        description: 'Width (px)'
+        required: false
+        default: '1024'
+      height:
+        description: 'Height (px)'
+        required: false
+        default: '1024'
+      model:
+        description: 'Pollinations model (flux | turbo)'
+        required: false
+        default: 'flux'
+      count:
+        description: 'Number of images (1-4)'
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PROMPT: ${{ inputs.prompt }}
+    steps:
+      - name: Generate images via Pollinations
+        run: |
+          mkdir -p images
+          COUNT=${{ inputs.count }}
+          if ! [[ "$COUNT" =~ ^[1-4]$ ]]; then COUNT=1; fi
+          for i in $(seq 1 "$COUNT"); do
+            ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$PROMPT")
+            SEED=$((RANDOM * 31 + i))
+            URL="https://image.pollinations.ai/prompt/${ENC}?width=${{ inputs.width }}&height=${{ inputs.height }}&model=${{ inputs.model }}&nologo=true&seed=${SEED}"
+            echo "Generating image $i ..."
+            curl -sL --retry 3 --max-time 120 -o "images/image_${i}.jpg" "$URL"
+          done
+          ls -lh images/
+
+      - name: Validate images
+        run: |
+          for f in images/*; do
+            [ -e "$f" ] || { echo "No images generated"; exit 1; }
+            MIME=$(file --mime-type -b "$f")
+            if [[ "$MIME" == image/* ]]; then
+              echo "OK ($MIME): $f ($(stat -c%s "$f") bytes)"
+            else
+              echo "ERROR: $f is $MIME, not an image"; head -c 300 "$f"; exit 1
+            fi
+          done
+
+      - name: Upload images artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: images/
+          retention-days: 30
